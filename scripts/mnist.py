@@ -24,7 +24,7 @@ def main():
     print('Reshaping and converting to float')
     x_train = np.reshape(x_train, (x_train.shape[0], x_train.shape[1], x_train.shape[2], 1)).astype(np.float32)
     x_test = np.reshape(x_test, (x_test.shape[0], x_test.shape[1], x_test.shape[2], 1)).astype(np.float32)
-
+    
     print('Converting labels to categorical')
     y_train = keras.utils.np_utils.to_categorical(y_train, 10)
     y_test = keras.utils.np_utils.to_categorical(y_test, 10)
@@ -35,11 +35,13 @@ def main():
     model = create_model_architecture(num_representation_layers, regularization, x_test)
 
     print('Creating training data augmentation')
-    datagen = keras.preprocessing.image.ImageDataGenerator(rotation_range=20, width_shift_range=0.1, height_shift_range=0.1, zoom_range=0.1, shear_range=5, validation_split=0.15)
+    datagen = keras.preprocessing.image.ImageDataGenerator(rotation_range=20, width_shift_range=0.1, height_shift_range=0.1, zoom_range=0.1, shear_range=5, validation_split=0.25)
 
     print('Fitting model')
     batch_size = 256
-    history = model.fit_generator(datagen.flow(x_train, y_train, batch_size=batch_size), steps_per_epoch=x_train.shape[0] // batch_size, validation_steps=x_train.shape[0] // (5 * batch_size), epochs=25, verbose=1)
+    train_generator = datagen.flow(x_train, y_train, batch_size=batch_size)
+    validation_generator = datagen.flow(x_train, y_train, batch_size=batch_size, subset='validation')
+    history = model.fit_generator(train_generator, steps_per_epoch=x_train.shape[0] // batch_size, validation_data=validation_generator, validation_steps=x_train.shape[0] // (5 * batch_size), epochs=120, verbose=1)
 
     perform_evaluation(model, history, x_test, y_test)
 
@@ -59,6 +61,7 @@ def perform_evaluation(model, history, x_test, y_test):
         a = f.add_subplot(2, 1, 1)
         a.set_title('Accuracy')
         a.plot(history.history['categorical_accuracy'], label='Training')
+        a.plot(history.history['val_categorical_accuracy'], label='Validation')
         a.set_ylabel('Accuracy')
         a.set_xlabel('Epoch')
         a.legend()
@@ -66,6 +69,7 @@ def perform_evaluation(model, history, x_test, y_test):
         a = f.add_subplot(2, 1, 2)
         a.set_title('Loss')
         a.plot(history.history['loss'], label='Training')
+        a.plot(history.history['val_loss'], label='Validation')
         a.set_ylabel('Loss')
         a.set_xlabel('Epoch')
         a.legend()

@@ -22,6 +22,7 @@ setup(
         'tensorflow',
         'opencv-contrib-python',
         'scikit-learn',
+        'pillow',
     ],
 
     tests_require=[
@@ -37,6 +38,7 @@ setup(
     entry_points={
         'console_scripts': [
             'mnist = scripts.mnist:main',
+            'autoencoder = scripts.autoencoder:main',
         ],
         'gui_scripts': [
         ],

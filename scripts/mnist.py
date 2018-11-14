@@ -29,18 +29,17 @@ def main():
     y_train = keras.utils.np_utils.to_categorical(y_train, 10)
     y_test = keras.utils.np_utils.to_categorical(y_test, 10)
 
-    num_representation_layers = 11
+    num_representation_layers = 10
     regularization = 0.1
 
     model = create_model_architecture(num_representation_layers, regularization, x_test)
 
     print('Creating training data augmentation')
-    datagen = keras.preprocessing.image.ImageDataGenerator(rotation_range=20, width_shift_range=0.2, height_shift_range=0.2, zoom_range=0.1, shear_range=5, validation_split=0.15)
-    #datagen.fit(x_train, augment=True, rounds=10)
+    datagen = keras.preprocessing.image.ImageDataGenerator(rotation_range=20, width_shift_range=0.1, height_shift_range=0.1, zoom_range=0.1, shear_range=5, validation_split=0.15)
 
     print('Fitting model')
-    batch_size=1024
-    history = model.fit_generator(datagen.flow(x_train, y_train, batch_size=batch_size), steps_per_epoch=x_train.shape[0] // batch_size, validation_steps=x_train.shape[0] // (5 * batch_size), epochs=50, verbose=1)
+    batch_size = 256
+    history = model.fit_generator(datagen.flow(x_train, y_train, batch_size=batch_size), steps_per_epoch=x_train.shape[0] // batch_size, validation_steps=x_train.shape[0] // (5 * batch_size), epochs=25, verbose=1)
 
     perform_evaluation(model, history, x_test, y_test)
 
@@ -54,19 +53,19 @@ def perform_evaluation(model, history, x_test, y_test):
     print('Shapes: predicted {}, expected {}'.format(predicted.shape, expected.shape))
 
     with PdfPages('analysis.pdf') as pdf:
+        print(history.history.keys())
         print('Plotting learning curves')
-        f = plt.figure(figsizez=(11, 8.5), dpi=600)
+        f = plt.figure(figsize=(11, 8.5), dpi=600)
         a = f.add_subplot(2, 1, 1)
         a.set_title('Accuracy')
-        a.plot(history['acc'], label='Training')
-        a.plot(history['val_acc'], label='Validation')
+        a.plot(history.history['categorical_accuracy'], label='Training')
         a.set_ylabel('Accuracy')
         a.set_xlabel('Epoch')
         a.legend()
 
         a = f.add_subplot(2, 1, 2)
         a.set_title('Loss')
-        a.plot(history['loss'], label='Training')
+        a.plot(history.history['loss'], label='Training')
         a.set_ylabel('Loss')
         a.set_xlabel('Epoch')
         a.legend()
@@ -107,7 +106,7 @@ def perform_evaluation(model, history, x_test, y_test):
             fpr, tpr, thresholds = sklearn.metrics.roc_curve(expected == i, scores)
             auc = sklearn.metrics.roc_auc_score(expected == i, scores)
 
-            a.set_title('ROC {}, AUC={:.02f}'.format(i, auc))
+            a.set_title('ROC {}, AUC={:.06f}'.format(i, auc))
             a.plot(fpr, tpr, label='ROC')
             a.set_xlabel('False positive rate')
             a.set_ylabel('True positive rate')
@@ -133,12 +132,9 @@ def create_model_architecture(num_representation_layers, regularization, x_test)
         model.add(keras.layers.PReLU(alpha_regularizer=keras.regularizers.l1(regularization)))
         model.add(keras.layers.SpatialDropout2D(0.25))
 
-
-    model.add(keras.layers.Conv2D(256, (3, 3), use_bias=True))
+    model.add(keras.layers.Conv2D(1024, (5, 5), use_bias=True))
     model.add(keras.layers.BatchNormalization(axis=1, momentum=0.99, epsilon=0.001, center=True, scale=True))
     model.add(keras.layers.PReLU(alpha_regularizer=keras.regularizers.l1(regularization)))
-    model.add(keras.layers.SpatialDropout2D(0.25))
-    model.add(keras.layers.MaxPooling2D(pool_size=(2, 2)))
     print('Representation shape: {}'.format(model.get_layer(index=-1).output_shape))
     model.add(keras.layers.Flatten())
     model.add(keras.layers.Dense(32, use_bias=True))

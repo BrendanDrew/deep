@@ -79,15 +79,19 @@ def network_architecture(regularization=0, patch_size=(128, 128)):
     m.add(keras.layers.ReLU())
     m.add(keras.layers.SpatialDropout2D(**dropout_common_arguments))
 
-    for i in range(4):
+    for i in range(3):
         m.add(keras.layers.Conv2D(filters=2 ** (i + 3), kernel_size=(3, 3), strides=(2, 2), **convolution_layer_common_arguments))
         m.add(keras.layers.BatchNormalization(**batch_common_arguments))
         m.add(keras.layers.ReLU())
         m.add(keras.layers.SpatialDropout2D(**dropout_common_arguments))
 
-    m.add(keras.layers.Conv2D(filters=1024, kernel_size=(3, 3), **convolution_layer_common_arguments))
+    print(m.layers[-1].output_shape)
+    m.add(keras.layers.Conv2D(filters=128, kernel_size=(6, 6), **convolution_layer_common_arguments))
     m.add(keras.layers.BatchNormalization(**batch_common_arguments))
     m.add(keras.layers.ReLU(name='encoder_output'))
+
+    print(m.layers[-1].output_shape)
+
     m.add(keras.layers.SpatialDropout2D(**dropout_common_arguments))
 
     upsampling_common_arguments = {
@@ -95,7 +99,7 @@ def network_architecture(regularization=0, patch_size=(128, 128)):
         'size': (2, 2)
     }
 
-    for i in range(4):
+    for i in range(5):
         m.add(keras.layers.UpSampling2D(**upsampling_common_arguments))
         m.add(keras.layers.Conv2D(filters=32, kernel_size=(3, 3), padding='same', **convolution_layer_common_arguments))
         m.add(keras.layers.BatchNormalization(**batch_common_arguments))
@@ -104,9 +108,10 @@ def network_architecture(regularization=0, patch_size=(128, 128)):
         print('Decoder stage [{}] output size: [{}]'.format(i, m.layers[-1].output_shape))
 
     m.add(keras.layers.UpSampling2D(**upsampling_common_arguments))
-    m.add(keras.layers.Conv2D(filters=3, kernel_size=(31, 31), padding='same', **convolution_layer_common_arguments))
+    m.add(keras.layers.Conv2D(filters=3, kernel_size=(5, 5), padding='same', **convolution_layer_common_arguments))
     m.add(keras.layers.BatchNormalization(**batch_common_arguments))
     m.add(keras.layers.ReLU())
+    print('Decoder final stage size: {}'.format(m.layers[-1].output_shape))
 
     m.compile(loss='mean_absolute_error', optimizer='nadam')
 
@@ -115,10 +120,12 @@ def network_architecture(regularization=0, patch_size=(128, 128)):
 
 
 def main():
-    patch_size = (128, 128)
+    patch_size = (64, 64)
 
     m = network_architecture(patch_size=patch_size)
 
+    m.summary()
+    
     samples = np.stack(extract_samples(sys.argv[1], patch_size, samples_per_image=3, sample_probability=0.03), axis=0)
 
     train_percentage = 0.5
@@ -134,8 +141,20 @@ def main():
 
     print('Train: [{}], validate: [{}], test: [{}]'.format(train_data.shape, val_data.shape, test_data.shape))
 
-    history = m.fit(x=train_data, y=train_data, batch_size=128, epochs=200, validation_data=(val_data, val_data), shuffle=True, verbose=1)
+    history = m.fit(x=train_data, y=train_data, batch_size=512, epochs=20, validation_data=(val_data, val_data), shuffle=True, verbose=1)
 
 
-
+    with PdfPages('autoencoder-analysis.pdf') as pdf:
+        print(history.history.keys())
+        print('Plotting learning curves')
+        f = plt.figure(figsize=(11, 8.5), dpi=600)
+        a = f.gca()
+        a.set_title('MAE')
+        a.plot(history.history['mae'], label='Training')
+        a.plot(history.history['val_mae'], label='Validation')
+        a.set_ylabel('Accuracy')
+        a.set_xlabel('Epoch')
+        a.legend()
+        
+        pdf.savefig(f)
 

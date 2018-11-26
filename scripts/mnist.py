@@ -31,15 +31,20 @@ def main():
     y_train = keras.utils.np_utils.to_categorical(y_train, 10)
     y_test = keras.utils.np_utils.to_categorical(y_test, 10)
 
-    num_representation_layers = 10
-    regularization = 0.0001
+    num_representation_layers = 12
+    regularization = 1e-5
 
     model = create_model_architecture(num_representation_layers, regularization, x_test)
 
     model.summary()
 
     print('Creating training data augmentation')
-    datagen = keras.preprocessing.image.ImageDataGenerator(rotation_range=20, width_shift_range=0.1, height_shift_range=0.1, zoom_range=0.1, shear_range=5, validation_split=0.25)
+    datagen = keras.preprocessing.image.ImageDataGenerator(rotation_range=20,
+                                                           width_shift_range=0.1,
+                                                           height_shift_range=0.1,
+                                                           zoom_range=0.1,
+                                                           shear_range=5,
+                                                           validation_split=0.25)
 
     print('Fitting model')
     batch_size = 512
@@ -56,7 +61,7 @@ def main():
                                       keras.callbacks.EarlyStopping(monitor='val_categorical_accuracy',
                                                                     verbose=1,
                                                                     mode='max',
-                                                                    patience=10,
+                                                                    patience=25,
                                                                     restore_best_weights=True),
                                   ])
 
@@ -163,9 +168,6 @@ def perform_evaluation(model, history, x_test, y_test):
         pdf.savefig(f)
         plt.close(f)
 
-        
-            
-
 def create_model_architecture(num_representation_layers, regularization, x_test):
     print('Setting up model architecture')
     model = keras.Sequential()
@@ -176,29 +178,25 @@ def create_model_architecture(num_representation_layers, regularization, x_test)
     model.add(keras.layers.ReLU())
 
     if regularization > 0:
-        model.add(keras.layers.ActivityRegularization(l1=regularization))
-        
-    model.add(keras.layers.SpatialDropout2D(0.25))
+        model.add(keras.layers.ActivityRegularization(l1=regularization, l2=regularization))
+    else:    
+        model.add(keras.layers.SpatialDropout2D(0.25))
 
     for i in range(num_representation_layers):
-        model.add(keras.layers.Conv2D(8, (3, 3), use_bias=True, data_format='channels_last'))
+        model.add(keras.layers.Conv2D(32 * ((i + 1)), (3, 3), use_bias=True, data_format='channels_last'))
         model.add(keras.layers.BatchNormalization(axis=2, momentum=0.99, epsilon=0.001, center=True, scale=True))
         model.add(keras.layers.ReLU())
         if regularization > 0:
-            model.add(keras.layers.ActivityRegularization(l1=regularization))
-            
-        model.add(keras.layers.SpatialDropout2D(0.25))
+            model.add(keras.layers.ActivityRegularization(l1=regularization, l2=regularization))
+        else:    
+            model.add(keras.layers.SpatialDropout2D(0.25))
 
-    model.add(keras.layers.Conv2D(8, (5, 5), use_bias=True, data_format='channels_last'))
-    model.add(keras.layers.BatchNormalization(axis=2, momentum=0.99, epsilon=0.001, center=True, scale=True))
-    model.add(keras.layers.ReLU())
-
-    if regularization > 0:
-        model.add(keras.layers.ActivityRegularization(l1=regularization))
-
+    model.add(keras.layers.GlobalMaxPooling2D(data_format='channels_last'))
+    model.add(keras.layers.BatchNormalization(axis=1, momentum=0.99, epsilon=0.001, center=True, scale=True))
+        
     print('Representation shape: {}'.format(model.get_layer(index=-1).output_shape))
-    model.add(keras.layers.Flatten())
-    model.add(keras.layers.Dense(16, use_bias=True))
+    
+    model.add(keras.layers.Dense(64, use_bias=True))
     model.add(keras.layers.ReLU())
     model.add(keras.layers.Dropout(0.5))
     model.add(keras.layers.Dense(10, activation='softmax', use_bias=True))

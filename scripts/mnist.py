@@ -32,7 +32,7 @@ def main():
     y_test = keras.utils.np_utils.to_categorical(y_test, 10)
 
     num_representation_layers = 12
-    regularization = 1e-5
+    regularization = 0
 
     model = create_model_architecture(num_representation_layers, regularization, x_test)
 
@@ -196,7 +196,7 @@ def create_model_architecture(num_representation_layers, regularization, x_test)
         
     print('Representation shape: {}'.format(model.get_layer(index=-1).output_shape))
     
-    model.add(keras.layers.Dense(64, use_bias=True))
+    model.add(keras.layers.Dense(32, use_bias=True))
     model.add(keras.layers.ReLU())
     model.add(keras.layers.Dropout(0.5))
     model.add(keras.layers.Dense(10, activation='softmax', use_bias=True))

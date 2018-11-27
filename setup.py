@@ -39,6 +39,7 @@ setup(
     entry_points={
         'console_scripts': [
             'mnist = scripts.mnist:main',
+            'mnist2 = scripts.mnist2:main',
             'autoencoder = scripts.autoencoder:main',
         ],
         'gui_scripts': [

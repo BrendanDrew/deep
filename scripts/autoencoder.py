@@ -31,7 +31,7 @@ def extract_samples(filename, patch_size, samples_per_image, sample_probability=
     print('Examining [{}]'.format(filename))
     with tarfile.open(filename, 'r:*') as tar:
         for thing in tar:
-            #if thing.name <= 'data_large/a/am':
+            if thing.name <= 'data_large/c/':
                 if thing.isreg() and prng.uniform(0, 1) <= sample_probability:
                     with tar.extractfile(thing) as jpeg:
                         print('Processing [{} :: {}]'.format(filename, thing.name))
@@ -52,8 +52,8 @@ def extract_samples(filename, patch_size, samples_per_image, sample_probability=
                                         samples.append(chip)
                                     else:
                                         print('Warning: offset=(row={}, col={}), patch size=(rows={}, cols={}), image shape=({}), chip shape=({})'.format(offset_row, offset_col, patch_size[0], patch_size[1], pix.shape, chip.shape))
-            #else:
-            #    break
+            else:
+                break
                                     
 
     return samples
@@ -95,17 +95,13 @@ def network_architecture(regularization=0, patch_size=(128, 128)):
 
     print('Size before final representation: {}'.format(m.layers[-1].output_shape))
 
-    m.add(keras.layers.Conv2D(filters=256 * (num_representation_layers * 2 + 4), kernel_size=(6, 6), **convolution_layer_common_arguments))
+    m.add(keras.layers.Conv2D(filters=1024, kernel_size=(6, 6), **convolution_layer_common_arguments))
     m.add(keras.layers.BatchNormalization(**batch_common_arguments))
-    m.add(keras.layers.ReLU())
-
-    print('Size before global max pooling: {}'.format(m.layers[-1].output_shape))
-
-    
+    m.add(keras.layers.ReLU(name='encoder_output'))
     m.add(keras.layers.SpatialDropout2D(**dropout_common_arguments))
-    #m.add(keras.layers.GlobalMaxPooling2D(name='encoder_output'))
+    
 
-    #print('Size after global max pooling: {}'.format(m.layers[-1].output_shape))
+    print('Size after global max pooling: {}'.format(m.layers[-1].output_shape))
 
     upsampling_common_arguments = {
         'data_format': 'channels_last',
@@ -126,7 +122,7 @@ def network_architecture(regularization=0, patch_size=(128, 128)):
     m.add(keras.layers.ReLU())
     print('Decoder final stage size: {}'.format(m.layers[-1].output_shape))
 
-    m.compile(loss='mean_absolute_error',
+    m.compile(loss='mean_squared_error',
               optimizer='nadam',
               metrics=['mae', 'mean_squared_error'])
 
@@ -143,7 +139,7 @@ def main():
 
     m.summary()
     
-    samples = np.stack(extract_samples(sys.argv[1], patch_size, samples_per_image=1, sample_probability=0.03), axis=0)
+    samples = np.stack(extract_samples(sys.argv[1], patch_size, samples_per_image=4, sample_probability=0.1), axis=0)
 
     train_percentage = 0.7
     validation_percentage = 0.15
@@ -166,35 +162,43 @@ def main():
 
     epochs = 2000
     batch_size = 256
-    training_generator = datagen.flow(x=train_data, y=train_data, batch_size=batch_size)
-    validation_generator = datagen.flow(x=val_data, y=val_data, batch_size=batch_size)
     
-    history = m.fit_generator(training_generator,
-                              steps_per_epoch=train_data.shape[0] // batch_size,
-                              validation_data=validation_generator,
-                              validation_steps=train_data.shape[0] // (5 * batch_size),
-                              epochs=epochs,
-                              shuffle=True,
-                              verbose=1,
-                              callbacks=[
-                                  keras.callbacks.EarlyStopping(monitor='val_loss',
-                                                                verbose=1,
-                                                                mode='min',
-                                                                patience=25),
-                              ])
+    history = m.fit(
+        x=train_data,
+        y=train_data,
+        batch_size=batch_size,
+        validation_data=(val_data, val_data),
+        epochs=epochs,
+        shuffle=True,
+        verbose=1,
+        callbacks=[
+            keras.callbacks.EarlyStopping(monitor='val_mean_squared_error',
+                                          verbose=1,
+                                          mode='min',
+                                          patience=150,
+                                          restore_best_weights=True),
+        ])
 
 
     with PdfPages('autoencoder-analysis.pdf') as pdf:
-        print(history.history.keys())
-        print('Plotting learning curves')
         f = plt.figure(figsize=(11, 8.5), dpi=600)
         a = f.gca()
-        a.set_title('MAE')
-        a.plot(history.history['loss'], label='Training')
-        a.plot(history.history['val_loss'], label='Validation')
-        a.set_ylabel('Accuracy')
+        a.set_title('Mean Squared Error')
+        a.plot(history.history['mean_squared_error'], label='Training')
+        a.plot(history.history['val_mean_squared_error'], label='Validation')
+        a.set_ylabel('MAE')
         a.set_xlabel('Epoch')
         a.legend()
-        
         pdf.savefig(f)
+        plt.close(f)
 
+        f = plt.figure(figsize=(11, 8.5), dpi=600)
+        a = f.gca()
+        a.set_title('Mean Absolute Error')
+        a.plot(history.history['mean_absolute_error'], label='Training')
+        a.plot(history.history['val_mean_absolute_error'], label='Validation')
+        a.set_ylabel('MSE')
+        a.set_xlabel('Epoch')
+        a.legend()
+        pdf.savefig(f)
+        plt.close(f)

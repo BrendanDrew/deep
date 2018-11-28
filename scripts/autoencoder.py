@@ -1,4 +1,3 @@
-import itertools
 import keras
 import keras.models
 import keras.layers
@@ -7,7 +6,6 @@ import keras.callbacks
 import keras.regularizers
 import keras.layers.advanced_activations
 import keras.utils.np_utils
-import sklearn.metrics
 import keras.preprocessing.image
 import matplotlib.pyplot as plt
 import random
@@ -31,7 +29,7 @@ def extract_samples(filename, patch_size, samples_per_image, sample_probability=
     print('Examining [{}]'.format(filename))
     with tarfile.open(filename, 'r:*') as tar:
         for thing in tar:
-            if thing.name <= 'data_large/c/':
+            #if thing.name <= 'data_large/c/':
                 if thing.isreg() and prng.uniform(0, 1) <= sample_probability:
                     with tar.extractfile(thing) as jpeg:
                         print('Processing [{} :: {}]'.format(filename, thing.name))
@@ -52,8 +50,8 @@ def extract_samples(filename, patch_size, samples_per_image, sample_probability=
                                         samples.append(chip)
                                     else:
                                         print('Warning: offset=(row={}, col={}), patch size=(rows={}, cols={}), image shape=({}), chip shape=({})'.format(offset_row, offset_col, patch_size[0], patch_size[1], pix.shape, chip.shape))
-            else:
-                break
+            #else:
+            #    break
                                     
 
     return samples
@@ -122,7 +120,7 @@ def network_architecture(regularization=0, patch_size=(128, 128)):
     m.add(keras.layers.ReLU())
     print('Decoder final stage size: {}'.format(m.layers[-1].output_shape))
 
-    m.compile(loss='mean_squared_error',
+    m.compile(loss='logcosh',
               optimizer='nadam',
               metrics=['mae', 'mean_squared_error'])
 
@@ -139,7 +137,7 @@ def main():
 
     m.summary()
     
-    samples = np.stack(extract_samples(sys.argv[1], patch_size, samples_per_image=4, sample_probability=0.1), axis=0)
+    samples = np.stack(extract_samples(sys.argv[1], patch_size, samples_per_image=1, sample_probability=0.05), axis=0)
 
     train_percentage = 0.7
     validation_percentage = 0.15
@@ -153,12 +151,6 @@ def main():
     gc.collect()
 
     print('Train: [{}], validate: [{}], test: [{}]'.format(train_data.shape, val_data.shape, test_data.shape))
-
-    datagen = keras.preprocessing.image.ImageDataGenerator(rotation_range=20,
-                                                           width_shift_range=0.1,
-                                                           height_shift_range=0.1,
-                                                           zoom_range=0.1,
-                                                           shear_range=5)
 
     epochs = 2000
     batch_size = 256
@@ -181,6 +173,17 @@ def main():
 
 
     with PdfPages('autoencoder-analysis.pdf') as pdf:
+        f = plt.figure(figsize=(11, 8.5), dpi=600)
+        a = f.gca()
+        a.set_title('Loss')
+        a.plot(history.history['loss'], label='Training')
+        a.plot(history.history['val_loss'], label='Validation')
+        a.set_ylabel('Loss')
+        a.set_xlabel('Epoch')
+        a.legend()
+        pdf.savefig(f)
+        plt.close(f)
+
         f = plt.figure(figsize=(11, 8.5), dpi=600)
         a = f.gca()
         a.set_title('Mean Squared Error')

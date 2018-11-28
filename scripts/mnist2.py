@@ -12,8 +12,10 @@ import keras.datasets
 import sklearn.metrics
 import keras.preprocessing.image
 import matplotlib.pyplot as plt
+from keras import backend as K
 from matplotlib.backends.backend_pdf import PdfPages
 import sys
+import gc
 
 import numpy as np
 
@@ -57,7 +59,7 @@ def create_model_architecture(item_shape, loss_function):
     current_input = normalized_input
     
     for i in range(num_representation_layers):
-        convolve = keras.layers.Conv2D(filters=64 * (4 * (i + 1)), **conv_layer_args)(current_input)
+        convolve = keras.layers.Conv2D(filters=16 * (2 * (i + 1)), **conv_layer_args)(current_input)
         normalize = keras.layers.BatchNormalization(**norm_layer_args)(convolve)
         activation = keras.layers.PReLU()(normalize)
         current_input = keras.layers.SpatialDropout2D(rate=0.1, data_format='channels_last')(activation)
@@ -122,128 +124,205 @@ def perform_evaluation(model, history, x_test, y_test):
     predicted = predictions.argmax(axis=1)
     expected = y_test.argmax(axis=1)
 
-    print('Shapes: predicted {}, expected {}'.format(predicted.shape, expected.shape))
+    confusion = sklearn.metrics.confusion_matrix(expected, predicted)
+    nf = confusion.astype(np.float32) / confusion.sum(axis=1)[:, np.newaxis]
+    class_to_curves = {}
+    class_to_auc = {}
 
-    with PdfPages('analysis.pdf') as pdf:
-        print(history.history.keys())
-        print('Plotting learning curves')
-        f = plt.figure(figsize=(11, 8.5), dpi=600)
-        a = f.add_subplot(2, 1, 1)
-        a.set_title('Accuracy')
-        a.plot(history.history['categorical_accuracy'], label='Training')
-        a.plot(history.history['val_categorical_accuracy'], label='Validation')
-        a.set_ylabel('Accuracy')
+    for i in range(10):
+        scores = predictions[:, i].ravel()
+        fpr, tpr, thresholds = sklearn.metrics.roc_curve(expected == i, scores)
+        tnr = 1 - fpr
+        f1 = 2 * tpr * tnr / (sys.float_info.min + tpr + tnr)
+        class_to_curves[i] = {
+            'true_positive_rate': tpr,
+            'true_negative_rate': tnr,
+            'false_positive_rate': fpr,
+            'f1': f1,
+            'thresholds': thresholds
+        }
+
+        class_to_auc[i] = sklearn.metrics.roc_auc_score(expected == i, scores)
+
+    return {
+        'training_loss': history.history['loss'],
+        'validation_loss': history.history['val_loss'],
+        'training_accuracy': history.history['categorical_accuracy'],
+        'validation_accuracy': history.history['val_categorical_accuracy'],
+        'confusion': nf,
+        'class_to_curves': class_to_curves,
+        'class_to_auc': class_to_auc
+    }
+
+
+def figure():
+    return plt.figure(figsize=(17, 11), dpi=600)
+
+
+def plot_learning_curves(loss_to_evaluation, pdf):
+    for (loss, evaluation) in sorted(loss_to_evaluation.items(), key=lambda x: x[0]):
+        f = figure()
+        a = f.add_subplot(1, 2, 1)
+        f.suptitle('Learning curves (loss={})'.format(loss), fontsize=12)
+        a.plot(evaluation['training_loss'], label='Training')
+        a.plot(evaluation['validation_loss'], label='Validation')
         a.set_xlabel('Epoch')
+        a.set_ylabel('Loss')
+        a.set_title('Loss')
         a.legend()
 
-        a = f.add_subplot(2, 1, 2)
-        a.set_title('Loss')
-        a.plot(history.history['loss'], label='Training')
-        a.plot(history.history['val_loss'], label='Validation')
-        a.set_ylabel('Loss')
+        a = f.add_subplot(1, 2, 2)
+        a.plot(evaluation['training_accuracy'], label='Training')
+        a.plot(evaluation['validation_accuracy'], label='Training')
         a.set_xlabel('Epoch')
+        a.set_ylabel('Accuracy')
+        a.set_title('Accuracy')
         a.legend()
 
         f.tight_layout()
         pdf.savefig(f)
         plt.close(f)
 
-        print('Computing evaluation metrics (confusion matrix)')
-        confusion = sklearn.metrics.confusion_matrix(expected, predicted)
-        f = plt.figure(figsize=(11, 8.5), dpi=600)
+
+def plot_confusion_matrices(loss_to_evalutation, pdf):
+    for (loss, evaluation) in sorted(loss_to_evalutation.items(), key=lambda x:x[0]):
+        f = figure()
         a = f.gca()
         cm = plt.cm.Blues
+        confusion = evaluation['confusion']
         src = a.imshow(confusion, cmap=cm)
         f.colorbar(src)
 
-        nf = confusion.astype(np.float32) / confusion.sum(axis=1)[:, np.newaxis]
-        t = nf.max() / 2
-        for i, j in itertools.product(range(nf.shape[0]), range(nf.shape[1])):
-            a.text(j, i, '{}\n{:.02f}%'.format(confusion[i, j], 100 * nf[i, j]), horizontalalignment='center',
-                   color='white' if nf[i, j] > t else 'black')
+        t = confusion.max() / 2
+        for i, j in itertools.product(range(confusion.shape[0]), range(confusion.shape[1])):
+            a.text(j, i, '{:.02f}%'.format(100 * confusion[i, j]), horizontalalignment='center', color='white' if confusion[i, j] > t else 'black')
 
-        a.set_title('Confusion matrix')
+        a.set_title('Confusion matrix (loss={})'.format(loss))
         a.set_xlabel('True label')
         a.set_ylabel('Predicted label')
         f.tight_layout()
         pdf.savefig(f)
         plt.close(f)
 
-        f = plt.figure(figsize=(11, 8.5), dpi=600)
-        num_rows = 4
-        num_cols = 3
 
-        class_to_curves = {}
-        
-        for i in range(10):
-            a = f.add_subplot(num_rows, num_cols, i + 1)
-            print('Computing ROC for class [{}]'.format(i))
-            scores = predictions[:, i].ravel()
-            fpr, tpr, thresholds = sklearn.metrics.roc_curve(expected == i, scores)
-            tnr = 1 - fpr
-            f1 = 2 * tpr * tnr / (sys.float_info.min + tpr + tnr)
-            idx = f1.argmax()
-            thresh = thresholds[idx]
-            peak_f1 = f1[idx]
+def plot_roc(loss_to_evaluation, pdf):
+    f = figure()
+    rows = 3
+    cols = 4
 
-            class_to_curves[i] = (tpr, tnr, fpr, f1, thresholds)
-            
-            auc = sklearn.metrics.roc_auc_score(expected == i, scores)
+    for cls in range(10):
+        data = []
 
-            a.set_title('ROC {}, AUC={:.04f}, F1={:.03f}@{:.03f}'.format(i, auc, peak_f1, thresh))
-            a.plot(fpr, tpr, label='ROC')
-            a.set_xlabel('False positive rate')
-            a.set_ylabel('True positive rate')
+        for (loss, evaluation) in loss_to_evaluation.items():
+            tpr = evaluation['class_to_curves'][cls]['true_positive_rate']
+            fpr = evaluation['class_to_curves'][cls]['false_positive_rate']
+            auc = evaluation['class_to_auc'][cls]
+            label = '{} ({:.03f} AUC)'.format(loss, auc)
+            data.append((label, fpr, tpr))
 
-        f.tight_layout()
-        pdf.savefig(f)
-        plt.close(f)
+        a = f.add_subplot(rows, cols, cls + 1)
 
-        f = plt.figure(figsize=(11, 8.5), dpi=600)
+        for (label, x, y) in sorted(data, key=lambda x: x[0]):
+            a.plot(x, y, label=label)
 
-        for i in range(10):
-            (tpr, tnr, fpr, f1, threshold) = class_to_curves[i]
-            a = f.add_subplot(num_rows, num_cols, i + 1)
-            a.set_title('Class {}'.format(i))
-            a.plot(threshold, tpr, label='TPR')
-            a.plot(threshold, tnr, label='TNR')
-            a.plot(threshold, f1, label='F1')
+        a.set_xlabel('FPR')
+        a.set_ylabel('TPR')
+        a.set_title('Class [{}]'.format(cls))
+        a.legend()
+
+    f.tight_layout()
+    pdf.savefig(f)
+    plt.close(f)
+
+    for loss, evaluation in sorted(loss_to_evaluation.items(), key=lambda x: x[0]):
+        for cls, curves in sorted(evaluation['class_to_curves'].items(), key=lambda x: x[0]):
+            f = figure()
+            a = f.gca()
+            tpr = curves['true_positive_rate']
+            fpr = curves['false_positive_rate']
+            thresholds = curves['thresholds']
+
+            a.plot(thresholds, tpr, label='True positive rate')
+            a.plot(thresholds, fpr, label='False positive rate')
+            a.set_title('Class {} / Loss {}'.format(cls, loss))
+            a.set_xlabel('Threshold')
             a.legend()
-            a.set_xlabel('Threshold (model score)')
-            a.set_label('Metric value')
+            pdf.savefig(f)
+            plt.close(f)
 
-        f.tight_layout()
-        pdf.savefig(f)
-        plt.close(f)
+
+def plot_f1(loss_to_evaluation, pdf):
+    for loss, evaluation in sorted(loss_to_evaluation.items(), key=lambda x: x[0]):
+        for cls, curves in sorted(evaluation['class_to_curves'].items(), key=lambda x: x[0]):
+            f = figure()
+            a = f.gca()
+            thresholds = curves['thresholds']
+            f1 = curves['f1']
+            peak_f1 = f1.max()
+
+            a.plot(thresholds, f1, label='F1 (peak={:.04f})'.format(peak_f1))
+            a.set_xlabel('Threshold')
+            a.set_ylabel('F1')
+            a.set_title('Class {} / Loss {} F1'.format(cls, loss))
+
+            pdf.savefig(f)
+            plt.close(f)
+
+
+def generate_plots(loss_to_evaluation):
+    with PdfPages('mnist2-analysis.pdf') as pdf:
+        plot_learning_curves(loss_to_evaluation, pdf)
+        plot_confusion_matrices(loss_to_evaluation, pdf)
+        plot_roc(loss_to_evaluation, pdf)
+        plot_f1(loss_to_evaluation, pdf)
+
 
 def main():
     losses = ['categorical_crossentropy',
-              'sparse_categorical_crossentropy',
               'kullback_leibler_divergence',
               'categorical_hinge']
 
-    batch_size = 1024
+    batch_size = 256
     training_generator, validation_generator, x_test, y_test, num_train_samples = load_dataset(batch_size)
+    epochs = 500
 
-    evaluation_results = {}
-    
+    loss_to_evaluation = {}
+
     for l in losses:
         print('Creating model for loss [{}]'.format(l))
         m = create_model_architecture((28, 28), l)
 
         print('Training model for loss [{}]'.format(l))
         history = m.fit_generator(training_generator,
-                                  steps_per_epoch = num_train_samples // batch_size,
-                                  epochs = epochs,
-                                  verbose = 2,
-                                  callbacks = [],
-                                  validation_data = validation_generator,
-                                  validation_steps = 10,
-                                  shuffle = True)
+                                  steps_per_epoch=num_train_samples // batch_size,
+                                  epochs=epochs,
+                                  verbose=1,
+                                  callbacks=[
+                                      keras.callbacks.EarlyStopping(monitor='val_categorical_accuracy',
+                                                                    verbose=1,
+                                                                    mode='max',
+                                                                    patience=25,
+                                                                    restore_best_weights=True),
+                                  ],
+                                  validation_data=validation_generator,
+                                  validation_steps=20,
+                                  shuffle=True)
+
+        print('Evaluating model with loss [{}]'.format(l))
+        loss_to_evaluation[l] = perform_evaluation(m, history, x_test, y_test)
 
         print('Saving model with loss [{}]'.format(l))
-        keras.models.save('mnist2-{}.model'.format(l))
+        keras.models.save_model(m, 'mnist2-{}.model'.format(l), overwrite=True)
 
         print('Saving training history for loss [{}]'.format(l))
         with bz2.open('{}.train_history'.format(l), 'wb', compresslevel=9) as file:
             pickle.dump(history, file, protocol=pickle.HIGHEST_PROTOCOL)
+
+        print('Cleaning up')
+        del m
+        del history
+        K.clear_session()
+        gc.collect()
+
+    print('Starting evaluation and plot generation')
+    generate_plots(loss_to_evaluation)

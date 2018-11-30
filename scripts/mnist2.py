@@ -37,6 +37,7 @@ def create_model_architecture(item_shape, loss_function):
     conv_layer_args = {
         'data_format': 'channels_last',
         'kernel_size': (3, 3),
+        'use_bias': True,
     }
 
     norm_layer_args = {
@@ -59,7 +60,7 @@ def create_model_architecture(item_shape, loss_function):
     current_input = normalized_input
     
     for i in range(num_representation_layers):
-        convolve = keras.layers.Conv2D(filters=16 * (2 * (i + 1)), **conv_layer_args)(current_input)
+        convolve = keras.layers.Conv2D(filters=16 * (3 * (i + 1)), **conv_layer_args)(current_input)
         normalize = keras.layers.BatchNormalization(**norm_layer_args)(convolve)
         activation = keras.layers.PReLU()(normalize)
         current_input = keras.layers.SpatialDropout2D(rate=0.1, data_format='channels_last')(activation)
@@ -151,7 +152,8 @@ def perform_evaluation(model, history, x_test, y_test):
         'validation_accuracy': history.history['val_categorical_accuracy'],
         'confusion': nf,
         'class_to_curves': class_to_curves,
-        'class_to_auc': class_to_auc
+        'class_to_auc': class_to_auc,
+        'accuracy': 100 * np.diag(confusion).sum() / confusion.sum(),
     }
 
 
@@ -163,7 +165,7 @@ def plot_learning_curves(loss_to_evaluation, pdf):
     for (loss, evaluation) in sorted(loss_to_evaluation.items(), key=lambda x: x[0]):
         f = figure()
         a = f.add_subplot(1, 2, 1)
-        f.suptitle('Learning curves (loss={})'.format(loss), fontsize=12)
+        f.suptitle('Learning curves (loss={})'.format(loss))
         a.plot(evaluation['training_loss'], label='Training')
         a.plot(evaluation['validation_loss'], label='Validation')
         a.set_xlabel('Epoch')
@@ -179,7 +181,7 @@ def plot_learning_curves(loss_to_evaluation, pdf):
         a.set_title('Accuracy')
         a.legend()
 
-        f.tight_layout()
+        f.tight_layout(rect=[0, 0.03, 1, 0.95])
         pdf.savefig(f)
         plt.close(f)
 
@@ -197,10 +199,9 @@ def plot_confusion_matrices(loss_to_evalutation, pdf):
         for i, j in itertools.product(range(confusion.shape[0]), range(confusion.shape[1])):
             a.text(j, i, '{:.02f}%'.format(100 * confusion[i, j]), horizontalalignment='center', color='white' if confusion[i, j] > t else 'black')
 
-        a.set_title('Confusion matrix (loss={})'.format(loss))
+        a.set_title('Confusion matrix (loss={}), Accuracy: {:.04f}%'.format(loss, evaluation['accuracy']))
         a.set_xlabel('True label')
         a.set_ylabel('Predicted label')
-        f.tight_layout()
         pdf.savefig(f)
         plt.close(f)
 
@@ -238,14 +239,16 @@ def plot_roc(loss_to_evaluation, pdf):
         for cls, curves in sorted(evaluation['class_to_curves'].items(), key=lambda x: x[0]):
             f = figure()
             a = f.gca()
+            f.suptitle('Loss: {}'.format(loss))
             tpr = curves['true_positive_rate']
             fpr = curves['false_positive_rate']
             thresholds = curves['thresholds']
 
             a.plot(thresholds, tpr, label='True positive rate')
             a.plot(thresholds, fpr, label='False positive rate')
-            a.set_title('Class {} / Loss {}'.format(cls, loss))
+            a.set_title('Class {}'.format(cls, loss))
             a.set_xlabel('Threshold')
+            a.set_ylabel('Rate')
             a.legend()
             pdf.savefig(f)
             plt.close(f)
@@ -256,6 +259,7 @@ def plot_f1(loss_to_evaluation, pdf):
         for cls, curves in sorted(evaluation['class_to_curves'].items(), key=lambda x: x[0]):
             f = figure()
             a = f.gca()
+            f.suptitle('Loss: {}'.format(loss))
             thresholds = curves['thresholds']
             f1 = curves['f1']
             peak_f1 = f1.max()
@@ -263,7 +267,7 @@ def plot_f1(loss_to_evaluation, pdf):
             a.plot(thresholds, f1, label='F1 (peak={:.04f})'.format(peak_f1))
             a.set_xlabel('Threshold')
             a.set_ylabel('F1')
-            a.set_title('Class {} / Loss {} F1'.format(cls, loss))
+            a.set_title('Class {} F1'.format(cls))
 
             pdf.savefig(f)
             plt.close(f)
@@ -279,8 +283,12 @@ def generate_plots(loss_to_evaluation):
 
 def main():
     losses = ['categorical_crossentropy',
-              'kullback_leibler_divergence',
-              'categorical_hinge']
+              'kullback_leibler_divergence']
+
+    short_names = {
+        'categorical_crossentropy': 'CC',
+        'kullback_leibler_divergence': 'KL-DIV'
+    }
 
     batch_size = 256
     training_generator, validation_generator, x_test, y_test, num_train_samples = load_dataset(batch_size)
@@ -301,15 +309,15 @@ def main():
                                       keras.callbacks.EarlyStopping(monitor='val_categorical_accuracy',
                                                                     verbose=1,
                                                                     mode='max',
-                                                                    patience=25,
-                                                                    restore_best_weights=True),
+                                                                    patience=10,
+                                                                    restore_best_weights=False),
                                   ],
                                   validation_data=validation_generator,
-                                  validation_steps=20,
+                                  validation_steps=30,
                                   shuffle=True)
 
         print('Evaluating model with loss [{}]'.format(l))
-        loss_to_evaluation[l] = perform_evaluation(m, history, x_test, y_test)
+        loss_to_evaluation[short_names[l]] = perform_evaluation(m, history, x_test, y_test)
 
         print('Saving model with loss [{}]'.format(l))
         keras.models.save_model(m, 'mnist2-{}.model'.format(l), overwrite=True)

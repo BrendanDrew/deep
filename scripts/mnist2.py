@@ -1,6 +1,4 @@
 import itertools
-import bz2
-import pickle
 import keras
 import keras.models
 import keras.layers
@@ -22,6 +20,82 @@ import numpy as np
 if __name__ == '__main__':
     main()
 
+def print_model_summary(m, file=sys.stdout):
+    num_layers = len(m.layers)
+    num_parameters = m.count_params()
+    print('TOTAL: {} LAYERS, {} PARAMETERS'.format(num_layers, num_parameters), file=file)
+
+def print_model_layer(l, file=sys.stdout):
+    input_description = ''
+
+    if hasattr(l, 'inputs'):
+        input_description = ', '.join([x.name for x in l.inputs])
+
+    output_description = ''
+    if hasattr(l, 'outputs'):
+        output_description = ', '.join([x.name for x in l.outputs])
+
+    input_size = ''
+    if hasattr(l, 'input_shape'):
+        input_size = str(l.input_shape)
+
+    output_size = ''
+    if hasattr(l, 'output_shape'):
+        output_size = str(l.output_shape)
+
+
+    layer_attributes = [
+        'filters',
+        'kernel_size',
+        'strides',
+        'padding',
+        'data_format',
+        'dilation_rate',
+        'activation',
+        'use_bias',
+        'units',
+    ]
+
+    additional_attributes = {attribute: getattr(l, attribute) for attribute in layer_attributes if hasattr(l, attribute)}
+
+    print('  LAYER: {} (\'{}\') // {} PARAMETERS'.format(type(l).__name__, l.name, l.count_params()), file=file)
+    print('    INPUT SHAPE:  {}'.format(input_size), file=file)
+    print('    INPUTS:       {}'.format(input_description), file=file)
+    print('    OUTPUT SHAPE: {}'.format(output_size), file=file)
+    print('    OUTPUTS:      {}'.format(output_description), file=file)
+    print('    WEIGHTS:', file=file)
+
+    if hasattr(l, 'trainable_weights'):
+        for t in l.trainable_weights:
+            print('        T {} {}'.format(t.name, t.shape), file=file)
+
+    if hasattr(l, 'untrainable_weights'):
+        for u in l.untrainable_weights:
+            print('        U {} {}'.format(u.name, u.shape), file=file)
+
+    print('    ATTRIBUTES:', file=file)
+
+    for (attribute, value) in sorted(additional_attributes.items(), key=lambda x: x[0]):
+        print('        {:20}: {}'.format(attribute, value), file=file)
+
+
+def print_model(m, file=sys.stdout):
+    print_model_summary(m, file=file)
+
+    for l in m.layers:
+        print_model_layer(l, file=file)
+
+
+def compute_num_layers_with_stride(input_size, convolution_size, stride):
+    n = 0
+
+    while input_size[0] > (convolution_size[0] - 1) and input_size[1] > (convolution_size[1] - 1):
+        n += 1
+        input_size = ((input_size[0] - convolution_size[0] +1) // stride[0]), ((input_size[1] - convolution_size[1] + 1) // stride[1])
+
+    return n, input_size
+
+
 def compute_num_layers_without_stride(input_size, convolution_size):
     n = 0
 
@@ -31,13 +105,19 @@ def compute_num_layers_without_stride(input_size, convolution_size):
 
     return n, input_size
 
-def create_model_architecture(item_shape, loss_function):
+
+def create_model_architecture(item_shape, loss_function, optimizer, representation_size, convolution_depth):
     print('Creating network architecture')
+
+    convolution_size = (5, 5)
+    convolution_stride = (1, 1)
 
     conv_layer_args = {
         'data_format': 'channels_last',
-        'kernel_size': (3, 3),
+        'kernel_size': convolution_size,
         'use_bias': True,
+        'activation': 'relu',
+        'strides': convolution_stride
     }
 
     norm_layer_args = {
@@ -47,47 +127,47 @@ def create_model_architecture(item_shape, loss_function):
         'center': True,
         'scale': True,
     }
-    
+
+    dropout_args = {
+        'rate': 0.25,
+        'data_format': 'channels_last'
+    }
+
     # Very first layer is always batch normalization
     input_layer = keras.layers.Input(shape=(*item_shape, 1), name='input')
     normalized_input = keras.layers.BatchNormalization(**norm_layer_args,
                                                        name='normalized_input')(input_layer)
 
     # Want to build the deepest possible representation
-    num_representation_layers, representation_shape = compute_num_layers_without_stride(item_shape, (3,3))
+    num_representation_layers, representation_shape = compute_num_layers_with_stride(item_shape, convolution_size, convolution_stride)
     print('Number of representation layers: {} // shape: {}'.format(num_representation_layers, representation_shape))
 
     current_input = normalized_input
-    
+
     for i in range(num_representation_layers):
-        convolve = keras.layers.Conv2D(filters=16 * (3 * (i + 1)), **conv_layer_args)(current_input)
-        normalize = keras.layers.BatchNormalization(**norm_layer_args)(convolve)
-        activation = keras.layers.PReLU()(normalize)
-        current_input = keras.layers.SpatialDropout2D(rate=0.1, data_format='channels_last')(activation)
+        current_input = keras.layers.Conv2D(filters=convolution_depth, **conv_layer_args)(current_input)
+        current_input = keras.layers.BatchNormalization(**norm_layer_args)(current_input)
 
-    # Final layer of representation -- lots of 1d big convolutions
-    convolve = keras.layers.Conv2D(filters=2048, kernel_size=(1,1), data_format='channels_last', name='Representation')(current_input)
-    pooled = keras.layers.GlobalMaxPooling2D(data_format='channels_last')(convolve)
-    
-    print('Representation layer shape: {}'.format(pooled.shape))
+    current_input = keras.layers.Conv2D(filters=convolution_depth, kernel_size=representation_shape, data_format='channels_last', name='final_convolution')(current_input)
+    current_input = keras.layers.BatchNormalization(**norm_layer_args)(current_input)
+    print('After 1D convolutions, shape is [{}] @ representation size {}'.format(current_input.shape, representation_size))
 
-    # Two hidden layers
-    normalized = keras.layers.BatchNormalization()(pooled)
-    hidden = keras.layers.Dense(512, use_bias=True)(normalized)
-    activation = keras.layers.PReLU()(hidden)
-    dropout = keras.layers.Dropout(0.5)(activation)
+    current_input = keras.layers.Flatten()(current_input)
 
-    normalized = keras.layers.BatchNormalization()(dropout)
-    hidden = keras.layers.Dense(128, use_bias=True)(normalized)
-    activation = keras.layers.PReLU()(hidden)
-    dropout = keras.layers.Dropout(0.5)(activation)
+    print('Representation layer shape: {}'.format(current_input.shape))
+
+    current_input = keras.layers.BatchNormalization()(current_input)
+
+    current_input = keras.layers.Dense(representation_size, activation='relu', use_bias=True, name='hidden')(current_input)
+    current_input = keras.layers.BatchNormalization()(current_input)
+    current_input = keras.layers.Dropout(0.5)(current_input)
 
     # Output classification layer
-    classification = keras.layers.Dense(10, activation='softmax', use_bias=True)(dropout)
+    classification = keras.layers.Dense(10, activation='softmax', use_bias=True, name='output')(current_input)
 
     model = keras.models.Model(inputs=input_layer, outputs=classification)
     model.compile(loss=loss_function,
-                  optimizer='nadam',
+                  optimizer=optimizer,
                   metrics=[
                       'categorical_accuracy',
                   ])
@@ -101,7 +181,14 @@ def load_dataset(batch_size):
     print('Reshaping and converting to float')
     x_train = np.reshape(x_train, (x_train.shape[0], x_train.shape[1], x_train.shape[2], 1)).astype(np.float32)
     x_test = np.reshape(x_test, (x_test.shape[0], x_test.shape[1], x_test.shape[2], 1)).astype(np.float32)
-    
+
+    print('Shuffling training data')
+    p = np.random.permutation(x_train.shape[0])
+    tmp = x_train
+    x_train = tmp[p]
+    tmp = y_train
+    y_train = tmp[p]
+
     print('Converting labels to categorical')
     y_train = keras.utils.np_utils.to_categorical(y_train, 10)
     y_test = keras.utils.np_utils.to_categorical(y_test, 10)
@@ -145,6 +232,10 @@ def perform_evaluation(model, history, x_test, y_test):
 
         class_to_auc[i] = sklearn.metrics.roc_auc_score(expected == i, scores)
 
+    accuracy = 100 * np.diag(confusion).sum() / confusion.sum()
+
+    print('Correctly classified: {}, total {}, accuracy: {}%'.format(np.diag(confusion).sum(), confusion.sum(), accuracy))
+
     return {
         'training_loss': history.history['loss'],
         'validation_loss': history.history['val_loss'],
@@ -153,7 +244,7 @@ def perform_evaluation(model, history, x_test, y_test):
         'confusion': nf,
         'class_to_curves': class_to_curves,
         'class_to_auc': class_to_auc,
-        'accuracy': 100 * np.diag(confusion).sum() / confusion.sum(),
+        'accuracy': accuracy,
     }
 
 
@@ -175,7 +266,7 @@ def plot_learning_curves(loss_to_evaluation, pdf):
 
         a = f.add_subplot(1, 2, 2)
         a.plot(evaluation['training_accuracy'], label='Training')
-        a.plot(evaluation['validation_accuracy'], label='Training')
+        a.plot(evaluation['validation_accuracy'], label='Validation')
         a.set_xlabel('Epoch')
         a.set_ylabel('Accuracy')
         a.set_title('Accuracy')
@@ -186,8 +277,8 @@ def plot_learning_curves(loss_to_evaluation, pdf):
         plt.close(f)
 
 
-def plot_confusion_matrices(loss_to_evalutation, pdf):
-    for (loss, evaluation) in sorted(loss_to_evalutation.items(), key=lambda x:x[0]):
+def plot_confusion_matrices(loss_to_evaluation, pdf):
+    for (loss, evaluation) in sorted(loss_to_evaluation.items(), key=lambda x:x[0]):
         f = figure()
         a = f.gca()
         cm = plt.cm.Blues
@@ -282,55 +373,70 @@ def generate_plots(loss_to_evaluation):
 
 
 def main():
-    losses = ['categorical_crossentropy',
-              'kullback_leibler_divergence']
+    losses = [
+        'categorical_crossentropy',
+    ]
 
-    short_names = {
+    loss_short_names = {
         'categorical_crossentropy': 'CC',
         'kullback_leibler_divergence': 'KL-DIV'
     }
 
-    batch_size = 256
+    optimizers = [
+        'rmsprop',
+    ]
+
+    batch_size = 250
     training_generator, validation_generator, x_test, y_test, num_train_samples = load_dataset(batch_size)
     epochs = 500
 
     loss_to_evaluation = {}
 
+    representation_sizes = [
+        64,
+    ]
+
+    layer1_sizes = [
+        2, 8, 32, 128
+    ]
+
     for l in losses:
-        print('Creating model for loss [{}]'.format(l))
-        m = create_model_architecture((28, 28), l)
+        for o in optimizers:
+            for representation_size in representation_sizes:
+                for layer1_size in layer1_sizes:
+                    try:
+                        print('Creating model for loss [{}/{}], representation={}, convolution depth={}'.format(l, o, representation_size, layer1_size))
+                        m = create_model_architecture((28, 28), l, o, representation_size, layer1_size)
+                        m.summary(line_length=120)
 
-        print('Training model for loss [{}]'.format(l))
-        history = m.fit_generator(training_generator,
-                                  steps_per_epoch=num_train_samples // batch_size,
-                                  epochs=epochs,
-                                  verbose=1,
-                                  callbacks=[
-                                      keras.callbacks.EarlyStopping(monitor='val_categorical_accuracy',
-                                                                    verbose=1,
-                                                                    mode='max',
-                                                                    patience=10,
-                                                                    restore_best_weights=False),
-                                  ],
-                                  validation_data=validation_generator,
-                                  validation_steps=30,
-                                  shuffle=True)
+                        model_description = '{}:{} ({} / {}: {})'.format(loss_short_names[l], o, representation_size, layer1_size, m.count_params())
 
-        print('Evaluating model with loss [{}]'.format(l))
-        loss_to_evaluation[short_names[l]] = perform_evaluation(m, history, x_test, y_test)
+                        print('Training model {}'.format(model_description))
+                        history = m.fit_generator(training_generator,
+                                                  steps_per_epoch=num_train_samples // batch_size,
+                                                  epochs=epochs,
+                                                  verbose=1,
+                                                  callbacks=[
+                                                      keras.callbacks.EarlyStopping(monitor='val_categorical_accuracy',
+                                                                                    verbose=1,
+                                                                                    mode='max',
+                                                                                    patience=25,
+                                                                                    restore_best_weights=False),
+                                                  ],
+                                                  validation_data=validation_generator,
+                                                  validation_steps=20000 // batch_size,
+                                                  shuffle=True)
 
-        print('Saving model with loss [{}]'.format(l))
-        keras.models.save_model(m, 'mnist2-{}.model'.format(l), overwrite=True)
+                        print('Evaluating model'.format(l))
+                        loss_to_evaluation[model_description] = perform_evaluation(m, history, x_test, y_test)
 
-        print('Saving training history for loss [{}]'.format(l))
-        with bz2.open('{}.train_history'.format(l), 'wb', compresslevel=9) as file:
-            pickle.dump(history, file, protocol=pickle.HIGHEST_PROTOCOL)
-
-        print('Cleaning up')
-        del m
-        del history
-        K.clear_session()
-        gc.collect()
+                        print('Cleaning up')
+                        del m
+                        del history
+                        K.clear_session()
+                        gc.collect()
+                    except ValueError:
+                        print('Failed to create / train / evaluate model for {} / {} / {}'.format(l, representation_size, layer1_size))
 
     print('Starting evaluation and plot generation')
     generate_plots(loss_to_evaluation)

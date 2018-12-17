@@ -23,7 +23,8 @@ setup(
         'opencv-contrib-python',
         'scikit-learn',
         'pillow',
-        'pydot'
+        'pydot',
+        'tqdm'
     ],
 
     tests_require=[
